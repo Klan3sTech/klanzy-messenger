@@ -1,0 +1,300 @@
+/* ═══════════════════════════════════════════════════════════════
+   Klanzy × M3E — слой оформления Material 3 Expressive
+   Логика приложения не меняется: всё оформление берётся из
+   токенов --md-sys-color-*, которые M3E считает из seed-цвета.
+   ═══════════════════════════════════════════════════════════════ */
+
+m3e-theme {
+  display: block;
+  min-height: 100dvh;
+  background-color: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: "Roboto Flex", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* M3 shape scale */
+  --klanzy-shape-xs: 4px;
+  --klanzy-shape-sm: 8px;
+  --klanzy-shape-md: 12px;
+  --klanzy-shape-lg: 16px;
+  --klanzy-shape-xl: 28px;
+  /* Expressive easing из M3E */
+  --klanzy-ease: cubic-bezier(0.2, 0, 0, 1);
+  --klanzy-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html,
+body,
+#root {
+  background: #101014;
+}
+
+html[data-theme="light"],
+html[data-theme="light"] body,
+html[data-theme="light"] #root {
+  background: #fdf7ff;
+}
+
+/* ── Текст: нейтральные оттенки Tailwind → on-surface / on-surface-variant ── */
+
+.text-slate-100,
+.text-slate-200,
+.text-slate-50 {
+  color: var(--md-sys-color-on-surface);
+}
+
+.text-slate-300,
+.text-slate-400,
+.text-slate-500 {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.text-slate-600,
+.text-slate-700,
+.text-slate-800,
+.text-slate-900 {
+  color: var(--md-sys-color-on-surface);
+}
+
+.text-white {
+  color: var(--md-sys-color-on-primary);
+}
+
+.placeholder\:text-slate-500::placeholder,
+input::placeholder,
+textarea::placeholder {
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 0.7;
+}
+
+/* ── Поверхности ── */
+
+.bg-slate-950,
+.bg-slate-900 {
+  background-color: var(--md-sys-color-surface-container-low);
+}
+
+.bg-slate-800 {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+
+.bg-indigo-500\/20,
+.hover\:bg-indigo-500\/20:hover {
+  background-color: var(--md-sys-color-surface-container-highest);
+}
+
+.bg-indigo-500 {
+  background-color: var(--md-sys-color-primary);
+}
+
+/* ── Поля ввода в стиле M3 filled ── */
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  border-radius: 1rem;
+  background-color: var(--md-sys-color-surface-container-highest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  min-height: 2.5rem;
+  padding: 0.55rem 0.9rem;
+  transition:
+    background-color 180ms var(--klanzy-ease),
+    border-color 180ms var(--klanzy-ease),
+    border-radius 240ms var(--klanzy-ease);
+}
+
+textarea {
+  min-height: 3.25rem;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--md-sys-color-primary);
+  background-color: var(--md-sys-color-surface-container-high);
+  box-shadow: 0 0 0 2px var(--md-sys-color-primary);
+  border-radius: 1.25rem;
+}
+
+input[type="file"] {
+  display: none;
+}
+
+/* ── Кнопки: пилюли M3 + state layer вместо «подпрыгивания» ── */
+
+button {
+  position: relative;
+  border-radius: 999px;
+  transition:
+    background-color 200ms var(--klanzy-ease),
+    color 200ms var(--klanzy-ease),
+    box-shadow 200ms var(--klanzy-ease),
+    border-radius 260ms var(--klanzy-ease),
+    opacity 160ms var(--klanzy-ease);
+}
+
+button:hover {
+  transform: none;
+}
+
+button:active {
+  transform: scale(0.975);
+}
+
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+/* кнопки «по умолчанию» — tonal */
+button:not([class*="bg-"]):not([style*="background"]) {
+  background-color: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+button:not([class*="bg-"]):not([style*="background"]):hover {
+  background-color: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+}
+
+/* ── Скругления M3 для карточек и панелей ── */
+
+.rounded-\[2rem\] {
+  border-radius: 1.75rem;
+}
+
+.rounded-2xl {
+  border-radius: 1.25rem;
+}
+
+.rounded-xl {
+  border-radius: 1rem;
+}
+
+/* ── Скроллбары в стиле Material ── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--md-sys-color-on-surface) 22%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 20%, transparent);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 34%, transparent);
+}
+
+/* ── Фокус и выделение ── */
+
+::selection {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+/* ── Мелкая полировка: разделители и «стеклянные» панели ── */
+
+aside,
+[style*="background-color: var(--md-sys-color-surface-container)"] {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.backdrop-blur-xl {
+  backdrop-filter: blur(24px) saturate(1.15);
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+}
+
+/* Пузыри сообщений: экспрессивные асимметричные углы */
+.klanzy-bubble {
+  border-radius: 1.25rem;
+}
+
+/* ── Lite-режим: без размытий и анимаций (сохраняем поведение) ── */
+
+html[data-lite="true"] .backdrop-blur-xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ════════ M3 типографика ════════ */
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--md-sys-color-on-surface);
+}
+
+h1 {
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+
+/* M3 error-тон для деструктивных действий */
+.bg-rose-500,
+.bg-rose-500\/80,
+.bg-rose-500\/70 {
+  background-color: var(--md-sys-color-error-container) !important;
+  color: var(--md-sys-color-on-error-container) !important;
+}
+
+.text-rose-300,
+.text-rose-400 {
+  color: var(--md-sys-color-error) !important;
+}
+
+.text-emerald-300,
+.text-emerald-400 {
+  color: var(--md-sys-color-primary) !important;
+}
+
+.text-amber-300 {
+  color: var(--md-sys-color-tertiary) !important;
+}
+
+/* ════════ Пузыри сообщений в духе M3 ════════ */
+
+.klanzy-message-enter {
+  border-radius: 1.375rem;
+  box-shadow: none;
+}
+
+.klanzy-message-enter:hover {
+  filter: brightness(1.04);
+}
+
+/* state layer для строк списка чатов и карточек */
+button.rounded-xl:hover,
+button.rounded-2xl:hover {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent),
+    color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent)
+  );
+}
+
+/* ════════ Верхняя панель чата: тональная поверхность ════════ */
+
+.m3e-appbar-title {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* кастомный скролл внутри панелей не «съедает» углы */
+aside::-webkit-scrollbar,
+section::-webkit-scrollbar {
+  width: 6px;
+}
