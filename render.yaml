@@ -1,0 +1,26 @@
+# Blueprint для Render: New → Blueprint → выбери репозиторий.
+# Создаст один Docker-сервис Klanzy (nginx + Node-бэкенд в одном контейнере).
+services:
+  - type: web
+    name: klanzy
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/bootstrap
+    autoDeploy: true
+    envVars:
+      - key: TZ
+        value: Europe/Minsk
+      # Render сам подставит PORT (10000) — nginx займёт его,
+      # бэкенд внутри контейнера слушает 3001. Ничего задавать не нужно.
+      # Почта (на free-плане SMTP закрыт — коды будут в логах):
+      # - key: SMTP_HOST
+      #   value: smtp.yandex.ru
+      # - key: SMTP_PORT
+      #   value: "465"
+      # - key: SMTP_SECURE
+      #   value: "true"
+      # - key: SMTP_USER
+      #   sync: false
+      # - key: SMTP_PASS
+      #   sync: false

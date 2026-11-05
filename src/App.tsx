@@ -127,7 +127,12 @@ const getServerBaseUrl = () => {
   if (typeof window === "undefined") {
     return "http://localhost:3001";
   }
-  return `${window.location.protocol}//${window.location.hostname}:3001`;
+  // dev: Vite на 5173, бэкенд отдельно на 3001
+  if (window.location.port === "5173") {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
+  }
+  // прод: один origin — nginx (или платформа) проксирует /api и /ws
+  return window.location.origin;
 };
 const SERVER_URL = getServerBaseUrl();
 const WS_URL = SERVER_URL.replace(/^http/i, "ws");
@@ -1446,7 +1451,7 @@ function AppShell() {
       serverSocketRef.current?.close();
       serverSocketRef.current = null;
     };
-  }, []);
+  }, [currentUsername]);
 
   useEffect(() => {
     if (!isRegistered || !currentUsername) {
