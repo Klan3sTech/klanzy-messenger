@@ -32,6 +32,10 @@ const SMTP_SECURE = process.env.SMTP_SECURE === "true";
 const SMTP_USER = process.env.SMTP_USER || "";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const BREVO_API_KEY = process.env.BREVO_API_KEY || "";
+const MAIL_FROM_ADDRESS = process.env.MAIL_FROM || SMTP_FROM || "onboarding@resend.dev";
+const MAIL_FROM_NAME = process.env.MAIL_FROM_NAME || "Klanzy";
 
 const mailTransport =
   SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS && SMTP_FROM
@@ -418,13 +422,72 @@ const hasChatAdminRights = (chatId, actorUsername) => {
   );
 };
 
+const mailProviderName = () => {
+  if (RESEND_API_KEY) {
+    return "resend";
+  }
+  if (BREVO_API_KEY) {
+    return "brevo";
+  }
+  if (mailTransport) {
+    return "smtp";
+  }
+  return "";
+};
+
+/* HTTP-API почты: работает там, где SMTP-порты закрыты (например, Render free) */
+const sendMailOverHttp = async ({ to, subject, text }) => {
+  if (RESEND_API_KEY) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: `${MAIL_FROM_NAME} <${MAIL_FROM_ADDRESS}>`,
+        to: [to],
+        subject,
+        text
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`Resend ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    }
+    return true;
+  }
+
+  if (BREVO_API_KEY) {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        sender: { email: MAIL_FROM_ADDRESS, name: MAIL_FROM_NAME },
+        to: [{ email: to }],
+        subject,
+        textContent: text
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`Brevo ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    }
+    return true;
+  }
+
+  return false;
+};
+
 const queueLoginCodeEmail = async ({ email, username, code, expiresInSec }) => {
   if (!email) {
     return false;
   }
 
+  const minutes = Math.floor(expiresInSec / 60);
   const subject = "Klanzy: код для входа";
-  const body = `Ваш код входа в Klanzy: ${code}. Username: ${username}. Код действует ${Math.floor(expiresInSec / 60)} минут.`;
+  const body = `Ваш код входа в Klanzy: ${code}. Username: ${username}. Код действует ${minutes} минут.`;
 
   db.prepare("INSERT INTO email_outbox (id, email, subject, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
     createId(),
@@ -434,25 +497,27 @@ const queueLoginCodeEmail = async ({ email, username, code, expiresInSec }) => {
     Date.now()
   );
 
-  if (!mailTransport) {
-    console.log(`[mail:mock] To: ${email} | ${subject} | Code: ${code} | User: ${username} | TTL: ${expiresInSec}s`);
-    return false;
-  }
-
   try {
-    await mailTransport.sendMail({
-      from: SMTP_FROM,
-      to: email,
-      subject,
-      text: body
-    });
-    console.log(`[mail:sent] To: ${email} | User: ${username} | TTL: ${expiresInSec}s`);
-    return true;
+    if (RESEND_API_KEY || BREVO_API_KEY) {
+      await sendMailOverHttp({ to: email, subject, text: body });
+      console.log(`[mail:sent:${mailProviderName()}] To: ${email} | User: ${username}`);
+      return true;
+    }
+
+    if (mailTransport) {
+      await mailTransport.sendMail({ from: SMTP_FROM, to: email, subject, text: body });
+      console.log(`[mail:sent:smtp] To: ${email} | User: ${username}`);
+      return true;
+    }
   } catch (error) {
     const details = error instanceof Error ? error.message : "Unknown error";
     console.error(`[mail:error] ${details}`);
-    return false;
   }
+
+  /* Почта не настроена — код выводим в лог и отдаём в ответе API,
+     чтобы вход можно было завершить на экране. */
+  console.log(`[mail:mock] To: ${email} | ${subject} | Code: ${code} | User: ${username} | TTL: ${expiresInSec}s`);
+  return false;
 };
 
 const getAllBlocks = () =>
@@ -559,11 +624,18 @@ const server = createServer(async (req, res) => {
     const usernameParam = normalizeUsername((url.searchParams.get("username") || "").replace("@", ""));
     /* Группы и каналы отдаём только их создателю. */
     const chatsForUser = getAllChats().filter((chat) => {
-      if (chat.kind !== "group" && chat.kind !== "channel") {
-        return true;
-      }
       const owner = normalizeUsername(String(chat.ownerUsername || "").replace("@", ""));
-      return Boolean(owner) && owner === usernameParam;
+      const participant = normalizeUsername(String(chat.username || "").replace("@", ""));
+      if (chat.kind === "group" || chat.kind === "channel") {
+        return Boolean(owner) && owner === usernameParam;
+      }
+      if (chat.kind === "direct") {
+        if (!owner && !participant) {
+          return true;
+        }
+        return owner === usernameParam || participant === usernameParam;
+      }
+      return true;
     });
     sendJson(res, 200, {
       users: getAllUsers(),
@@ -763,6 +835,64 @@ const server = createServer(async (req, res) => {
         expiresInSec: 600,
         sentToEmail,
         maskedEmail: user.email ? user.email.replace(/(^.).+(@.*$)/, "$1***$2") : ""
+      });
+      return;
+    } catch {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return;
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/login/email/request") {
+    try {
+      const payload = await readBody(req);
+      const email = String(payload?.email || "").trim().toLowerCase();
+      if (!email || !email.includes("@")) {
+        sendJson(res, 400, { error: "Invalid email" });
+        return;
+      }
+
+      const user = db
+        .prepare("SELECT id, username, email, banned FROM users WHERE LOWER(email) = ? LIMIT 1")
+        .get(email);
+
+      if (!user) {
+        sendJson(res, 404, { error: "Email not found" });
+        return;
+      }
+
+      if (user.banned) {
+        sendJson(res, 403, { error: "User banned" });
+        return;
+      }
+
+      const username = normalizeUsername(String(user.username || "").replace("@", ""));
+      const code = createLoginCode();
+      const expiresAt = Date.now() + 10 * 60 * 1000;
+      db.prepare("DELETE FROM login_codes WHERE username = ?").run(username);
+      db.prepare("INSERT INTO login_codes (code, user_id, username, expires_at, created_at) VALUES (?, ?, ?, ?, ?)").run(
+        code,
+        user.id,
+        username,
+        expiresAt,
+        Date.now()
+      );
+
+      const emailSent = await queueLoginCodeEmail({
+        email: user.email || email,
+        username,
+        code,
+        expiresInSec: 600
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        username,
+        emailSent,
+        /* если письмо реально не ушло — отдаём код, чтобы вход можно было завершить на экране */
+        code: emailSent ? undefined : code,
+        expiresInSec: 600,
+        maskedEmail: String(user.email || email).replace(/(^.).+(@.*$)/, "$1***$2")
       });
       return;
     } catch {
@@ -1412,7 +1542,7 @@ const server = createServer(async (req, res) => {
         Date.now()
       );
 
-      broadcast({ type: "chat:message", chatId, message, clientId });
+      broadcast({ type: "chat:message", chatId, message, chat: getAllChats().find((item) => item.id === chatId) ?? null, clientId });
       sendJson(res, 200, { ok: true, message });
       return;
     } catch {
@@ -1480,6 +1610,8 @@ const server = createServer(async (req, res) => {
           kind: String(chat.kind || "group"),
           visibility: chat.visibility === "private" ? "private" : "open",
           subscribed: Boolean(chat.subscribed),
+          /* владелец нужен получателю, чтобы понять, кто его добавил в личный чат */
+          ownerUsername: actorUsername || undefined,
           messages: chat.messages
         },
         clientId
@@ -1601,7 +1733,7 @@ const server = createServer(async (req, res) => {
         Date.now()
       );
 
-      broadcast({ type: "chat:message", chatId, message, clientId });
+      broadcast({ type: "chat:message", chatId, message, chat: getAllChats().find((item) => item.id === chatId) ?? null, clientId });
       sendJson(res, 200, { ok: true });
       return;
     } catch {
