@@ -298,3 +298,16 @@ aside::-webkit-scrollbar,
 section::-webkit-scrollbar {
   width: 6px;
 }
+
+/* ── Телефон: чат открывается на весь экран, но нижняя панель остаётся ── */
+@media (max-width: 767px) {
+  .klanzy-mobile-chat {
+    position: fixed;
+    inset: 0 0 72px 0;
+    z-index: 30;
+    overflow-y: auto;
+    border-radius: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
