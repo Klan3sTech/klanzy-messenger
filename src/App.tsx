@@ -64,16 +64,6 @@ type Message = {
   attachmentMime?: string;
 };
 
-type DownloadItem = {
-  id: string;
-  sourceId: string;
-  title: string;
-  chatTitle: string;
-  url: string;
-  progress: number;
-  status: "downloading" | "paused" | "done";
-};
-
 type GeminiReply = {
   text: string;
   generatedImage?: {
@@ -113,7 +103,6 @@ const hexToRgba = (hex: string, alpha: number) => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const searchTabs: SearchTab[] = ["Чаты", "Каналы", "Видео", "Фото", "Файлы", "Загрузки"];
 const GEMINI_CHAT_ID = "gemini-support";
 const COMMUNITY_CHAT_ID = "klanzy-community";
 const CREATOR_USERNAME = "@klan3s";
@@ -276,6 +265,22 @@ const normalizeUsername = (value: string) => {
     return "";
   }
   return `@${prepared}`;
+};
+
+/* Личные диалоги видит только участник, группы и каналы — только создатель. */
+const isChatVisibleFor = (chat: ChatItem, username: string) => {
+  const owner = normalizeUsername(String(chat.ownerUsername || ""));
+  if (chat.kind === "group" || chat.kind === "channel") {
+    return Boolean(owner) && owner === username;
+  }
+  if (chat.kind === "direct") {
+    const participant = normalizeUsername(String(chat.username || ""));
+    if (!owner && !participant) {
+      return true; /* старые чаты без владельца не скрываем */
+    }
+    return owner === username || participant === username;
+  }
+  return true;
 };
 
 const createId = () => {
@@ -641,7 +646,6 @@ function AppShell() {
   const [activeChatId, setActiveChatId] = useState(initialChats[0].id);
   const [activeSection, setActiveSection] = useState<SectionTab>("chats");
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>("profile");
-  const [activeSearchTab, setActiveSearchTab] = useState<SearchTab>("Чаты");
   const [globalSearch, setGlobalSearch] = useState("");
   const [messageText, setMessageText] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
@@ -677,7 +681,6 @@ function AppShell() {
     return localStorage.getItem("klanzy_gemini_model") ?? "gemini-2.5-flash";
   });
   const [isAiResponding, setIsAiResponding] = useState(false);
-  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [chatAdmins, setChatAdmins] = useState<ChatAdminEntry[]>([]);
   const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
   const [sessionToken, setSessionToken] = useState(() => {
@@ -699,6 +702,25 @@ function AppShell() {
   const [pinnedByChat, setPinnedByChat] = useState<Record<string, string>>({});
   const [adminSessionUser, setAdminSessionUser] = useState("");
   const [showChatMenu, setShowChatMenu] = useState(false);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [emailLoginValue, setEmailLoginValue] = useState("");
+  const [emailLoginUsername, setEmailLoginUsername] = useState("");
+  const [emailLoginCode, setEmailLoginCode] = useState("");
+  const [emailLoginDevCode, setEmailLoginDevCode] = useState("");
+  const [emailLoginSent, setEmailLoginSent] = useState(false);
+  const [emailLoginStatus, setEmailLoginStatus] = useState("");
+  const [searchHistoryItems, setSearchHistoryItems] = useState<string[]>(() => {
+    if (typeof window === "undefined") {
+      return [];
+    }
+    try {
+      const raw = localStorage.getItem("klanzy_search_history");
+      const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+      return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string").slice(0, 20) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const registerAvatarInputRef = useRef<HTMLInputElement | null>(null);
@@ -718,13 +740,58 @@ function AppShell() {
     Boolean(chat.ownerUsername) &&
     normalizeUsername((chat.ownerUsername || "").replace("@", "")) === currentUsername;
 
-  /* Группы и каналы видит только тот, кто их создал. */
-  const visibleChatList = chats.filter((chat) => {
-    if (chat.kind === "group" || chat.kind === "channel") {
-      return isOwnerOfChat(chat);
+  /* В личном чате показываем собеседника, а не самого себя. */
+  const chatPeerUsername = (chat: ChatItem) => {
+    if (chat.kind !== "direct") {
+      return "";
     }
-    return true;
-  });
+    const owner = normalizeUsername(chat.ownerUsername || "");
+    const field = normalizeUsername(chat.username || "");
+    if (owner && owner !== currentUsername) {
+      return owner;
+    }
+    if (field && field !== currentUsername) {
+      return field;
+    }
+    return "";
+  };
+
+  const chatTitle = (chat: ChatItem) => {
+    if (chat.kind !== "direct") {
+      return chat.title || "Без названия";
+    }
+    const peer = chatPeerUsername(chat);
+    if (!peer) {
+      return chat.title || "Личный диалог";
+    }
+    const person = users.find(
+      (user) => normalizeUsername((user.username || "").replace("@", "")) === peer
+    );
+    return person?.nickname?.trim() || peer;
+  };
+
+  const chatSubtitle = (chat: ChatItem) => {
+    if (chat.kind === "direct") {
+      const peer = chatPeerUsername(chat);
+      return peer || "Личный диалог";
+    }
+    if (chat.username) {
+      return chat.username;
+    }
+    if (chat.kind === "group") {
+      return "группа";
+    }
+    if (chat.kind === "channel") {
+      return "канал";
+    }
+    if (chat.kind === "bot") {
+      return "бот";
+    }
+    return "Личный диалог";
+  };
+
+  /* Группы и каналы видит только тот, кто их создал. */
+  const visibleChatList = chats.filter((chat) => isChatVisibleFor(chat, currentUsername));
 
   const EMPTY_CHAT: ChatItem = {
     id: "no-chats",
@@ -880,37 +947,30 @@ function AppShell() {
   }, [activeSection, globalSearch]);
 
   const searchableEntities = useMemo<SearchEntity[]>(() => {
-    const canShowSearchChat = (chat: ChatItem) => {
-      if (chat.kind === "direct" || chat.kind === "bot") {
-        return true;
-      }
-
-      if (chat.kind === "channel" || chat.kind === "group") {
+    const visibleChats = chats.filter((chat) => {
+      if (chat.kind === "group" || chat.kind === "channel") {
         return isOwnerOfChat(chat);
       }
-
       return true;
-    };
+    });
 
-    const visibleChats = chats.filter(canShowSearchChat);
-
-    const all: SearchEntity[] = visibleChats.map((chat) => {
-      const base = `${chat.title} ${chat.username ?? ""}`.toLowerCase();
-      const type: SearchTab = chat.kind === "channel" ? "Каналы" : "Чаты";
-      return {
+    const chatEntities: SearchEntity[] = visibleChats
+      .filter((chat) => chat.kind === "group" || chat.kind === "channel")
+      .map((chat) => ({
         id: chat.id,
-        type,
+        type: chat.kind === "channel" ? "Каналы" : "Чаты",
         label: chat.title,
         username: chat.username,
-        payload: base,
+        payload: `${chat.title} ${chat.username ?? ""}`.toLowerCase(),
         entityKind: "chat"
-      };
-    });
+      }));
 
     const mergedUsers = [...users, ...directoryUsers].filter(
       (user, index, list) =>
         list.findIndex(
-          (candidate) => normalizeUsername((candidate.username || "").replace("@", "")) === normalizeUsername((user.username || "").replace("@", ""))
+          (candidate) =>
+            normalizeUsername((candidate.username || "").replace("@", "")) ===
+            normalizeUsername((user.username || "").replace("@", ""))
         ) === index
     );
 
@@ -921,70 +981,43 @@ function AppShell() {
         type: "Чаты",
         label: user.nickname || user.username,
         username: user.username,
-        payload: `${user.nickname} ${user.username}`.toLowerCase(),
+        payload: `${user.nickname ?? ""} ${user.username}`.toLowerCase(),
         entityKind: "user",
         userId: user.id
       }));
 
-    const media: SearchEntity[] = visibleChats.flatMap((chat) =>
-      chat.messages
-        .filter((message) => message.attachment)
-        .map((message) => ({
-          id: `${chat.id}-${message.id}`,
-          type:
-            message.attachment === "Видео"
-              ? "Видео"
-              : message.attachment === "Фото"
-                ? "Фото"
-                : message.attachment === "Файл"
-                  ? "Файлы"
-                  : "Загрузки",
-          label: `${message.attachment}: ${chat.title}`,
-          username: chat.username,
-          payload: `${message.text} ${message.attachmentName ?? ""} ${chat.title}`.toLowerCase(),
-          entityKind: "media"
-        }))
-    );
-
-    return [...all, ...people, ...media];
+    return [...people, ...chatEntities];
   }, [chats, users, directoryUsers, currentUsername]);
 
+  /* Поиск как в Telegram: ищем именно по @username и нику, а не по тексту сообщений */
   const searchResults = useMemo(() => {
-    const normalized = globalSearch.trim().toLowerCase();
-    return searchableEntities.filter((entity) => {
-      const tabMatch = activeSearchTab === entity.type;
-      const queryMatch = !normalized || entity.payload.includes(normalized);
-      return tabMatch && queryMatch;
-    });
-  }, [activeSearchTab, globalSearch, searchableEntities]);
+    const raw = globalSearch.trim().toLowerCase().replace(/^@/, "");
+    if (!raw) {
+      return [];
+    }
 
-  const showPoppyHands = globalSearch.trim().toLowerCase().includes("poppy playtime");
+    const scored = searchableEntities
+      .map((entity) => {
+        const username = normalizeUsername((entity.username || "").replace("@", ""));
+        const label = (entity.label || "").toLowerCase();
+        let score = 0;
+        if (username === raw || label === raw) {
+          score = 3;
+        } else if (username.startsWith(raw) || label.startsWith(raw)) {
+          score = 2;
+        } else if (username.includes(raw) || label.includes(raw)) {
+          score = 1;
+        }
+        return { entity, score };
+      })
+      .filter((item) => item.score > 0);
 
-  const downloadSources = useMemo(
-    () =>
-      chats.flatMap((chat) =>
-        chat.messages
-          .filter(
-            (message) =>
-              message.attachment &&
-              message.attachmentUrl &&
-              (message.attachment === "Файл" || message.attachment === "Музыка")
-          )
-          .map((message) => ({
-            sourceId: `${chat.id}-${message.id}`,
-            title: message.attachmentName || `${message.attachment}: ${chat.title}`,
-            chatTitle: chat.title,
-            url: message.attachmentUrl as string,
-            payload: `${message.attachmentName ?? ""} ${message.text} ${chat.title}`.toLowerCase()
-          }))
-      ),
-    [chats]
-  );
+    scored.sort((a, b) => b.score - a.score || a.entity.label.localeCompare(b.entity.label));
+    return scored.slice(0, 20).map((item) => item.entity);
+  }, [globalSearch, searchableEntities]);
 
-  const filteredDownloadSources = useMemo(() => {
-    const normalized = globalSearch.trim().toLowerCase();
-    return downloadSources.filter((item) => !normalized || item.payload.includes(normalized));
-  }, [downloadSources, globalSearch]);
+
+
 
   const accentThemes: Record<AccentTheme, { primary: string; secondary: string; soft: string; text: string }> = {
     blueviolet: {
@@ -1393,8 +1426,12 @@ function AppShell() {
           }
 
           if (payload.type === "chat:create" && payload.chat) {
+            const incomingChat = payload.chat as ChatItem;
+            if (!isChatVisibleFor(incomingChat, currentUsername)) {
+              return;
+            }
             skipChatsRealtimeRef.current = true;
-            setChats((prev) => (prev.some((chat) => chat.id === payload.chat?.id) ? prev : [payload.chat as ChatItem, ...prev]));
+            setChats((prev) => (prev.some((chat) => chat.id === incomingChat.id) ? prev : [incomingChat, ...prev]));
           }
 
           if (payload.type === "chat:clear" && payload.chatId) {
@@ -1404,20 +1441,40 @@ function AppShell() {
 
           if (payload.type === "chat:message" && payload.chatId && payload.message) {
             skipChatsRealtimeRef.current = true;
-            setChats((prev) =>
-              prev.map((chat) => {
+            setChats((prev) => {
+              const existing = prev.find((chat) => chat.id === payload.chatId);
+              const incoming = payload.message as Message;
+
+              /* Чат, которого ещё нет (мне написали впервые) — добавляем сразу */
+              if (!existing) {
+                const source = payload.chat as ChatItem | null | undefined;
+                if (source && !isChatVisibleFor(source, currentUsername)) {
+                  return prev;
+                }
+                const chatIdValue = String(payload.chatId);
+                const created: ChatItem = source
+                  ? { ...source, messages: [incoming] }
+                  : {
+                      id: chatIdValue,
+                      title: incoming.senderNickname?.trim() || incoming.senderUsername || "Новый чат",
+                      username: incoming.senderUsername,
+                      kind: "direct",
+                      visibility: "open",
+                      messages: [incoming]
+                    };
+                return [created, ...prev];
+              }
+
+              return prev.map((chat) => {
                 if (chat.id !== payload.chatId) {
                   return chat;
                 }
-                if (chat.messages.some((message) => message.id === payload.message?.id)) {
+                if (chat.messages.some((message) => message.id === incoming.id)) {
                   return chat;
                 }
-                return {
-                  ...chat,
-                  messages: [...chat.messages, payload.message as Message]
-                };
-              })
-            );
+                return { ...chat, messages: [...chat.messages, incoming] };
+              });
+            });
           }
 
           if (payload.type === "chat:message-delete" && payload.chatId && payload.message?.id) {
@@ -1517,26 +1574,6 @@ function AppShell() {
     }));
   }, [isRegistered, currentUser]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setDownloads((prev) =>
-        prev.map((item) => {
-          if (item.status !== "downloading") {
-            return item;
-          }
-
-          const nextProgress = Math.min(100, item.progress + 10);
-          return {
-            ...item,
-            progress: nextProgress,
-            status: nextProgress >= 100 ? "done" : "downloading"
-          };
-        })
-      );
-    }, 500);
-
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     setChats((prev) => {
@@ -1739,6 +1776,115 @@ function AppShell() {
         : "Почта не найдена, код доступен только здесь."
     );
     setSessionLoginCodeStatus("Код действует 10 минут. Передай его на другое устройство.");
+  };
+
+  const requestEmailLoginCode = async () => {
+    const email = emailLoginValue.trim().toLowerCase();
+    if (!email.includes("@")) {
+      setEmailLoginStatus("Введи корректную почту.");
+      return;
+    }
+
+    setEmailLoginStatus("Отправляем код...");
+    const response = await postToServer("/api/login/email/request", { email });
+    if (!response?.ok) {
+      setEmailLoginSent(false);
+      setEmailLoginStatus(
+        response?.status === 404 ? "Аккаунт с такой почтой не найден." : "Не удалось отправить код. Попробуй позже."
+      );
+      return;
+    }
+
+    const payload = (await response.json()) as {
+      username?: string;
+      emailSent?: boolean;
+      code?: string;
+    };
+
+    setEmailLoginUsername(payload.username || "");
+    setEmailLoginDevCode(payload.code || "");
+    setEmailLoginSent(true);
+    setEmailLoginCode("");
+    setEmailLoginStatus(
+      payload.emailSent
+        ? `Код отправлен на ${email}. Проверь почту (и папку «Спам»).`
+        : "Почта на сервере не настроена, поэтому код показан прямо здесь."
+    );
+  };
+
+  const submitEmailLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const username = normalizeUsername(emailLoginUsername.replace("@", ""));
+    const code = emailLoginCode.trim();
+    if (!username || !code) {
+      setEmailLoginStatus("Введи код из письма.");
+      return;
+    }
+
+    const response = await postToServer("/api/login/code/verify", {
+      username,
+      code,
+      deviceName: DEVICE_NAME
+    });
+
+    if (!response?.ok) {
+      setEmailLoginStatus("Код неверный или истёк. Запроси новый.");
+      return;
+    }
+
+    const payload = (await response.json()) as {
+      profile?: UserProfile;
+      session?: { token?: string; id?: string };
+      sessions?: DeviceSession[];
+    };
+
+    if (!completeCodeLogin(payload)) {
+      setEmailLoginStatus("Не удалось войти по коду.");
+      return;
+    }
+
+    setEmailLoginStatus("");
+    setEmailLoginSent(false);
+    setEmailLoginCode("");
+    setEmailLoginDevCode("");
+  };
+
+  const rememberSearchQuery = (raw: string) => {
+    const query = raw.trim();
+    if (!query) {
+      return;
+    }
+    setSearchHistoryItems((prev) => {
+      const next = [query, ...prev.filter((item) => item.toLowerCase() !== query.toLowerCase())].slice(0, 20);
+      try {
+        localStorage.setItem("klanzy_search_history", JSON.stringify(next));
+      } catch {
+        // игнорируем ошибки приватного режима
+      }
+      return next;
+    });
+  };
+
+  const clearSearchHistory = () => {
+    setSearchHistoryItems([]);
+    try {
+      localStorage.removeItem("klanzy_search_history");
+    } catch {
+      // ignore
+    }
+  };
+
+  const openSearchResult = (entity: SearchEntity) => {
+    rememberSearchQuery(entity.label);
+    if (entity.entityKind === "user") {
+      openOrCreateDirectChat(entity.username, entity.label);
+      return;
+    }
+    if (entity.entityKind === "chat" && chats.some((chat) => chat.id === entity.id)) {
+      setActiveChatId(entity.id);
+      setActiveSection("chats");
+      setMobileChatOpen(true);
+    }
   };
 
   const loginWithCode = async (event: FormEvent<HTMLFormElement>) => {
@@ -2672,6 +2818,7 @@ function AppShell() {
       username: normalizedTarget,
       kind: "direct",
       visibility: "open",
+      ownerUsername: currentUsername,
       messages: [
         {
           id: createId(),
@@ -2732,41 +2879,6 @@ function AppShell() {
     syncMessageToServer(activeChat.id, attachmentMessage);
 
     event.target.value = "";
-  };
-
-  const startOrResumeDownload = (source: { sourceId: string; title: string; chatTitle: string; url: string }) => {
-    setDownloads((prev) => {
-      const existing = prev.find((item) => item.sourceId === source.sourceId);
-      if (existing) {
-        return prev.map((item) =>
-          item.sourceId === source.sourceId
-            ? {
-                ...item,
-                status: item.status === "done" ? "done" : "downloading"
-              }
-            : item
-        );
-      }
-
-      return [
-        {
-          id: createId(),
-          sourceId: source.sourceId,
-          title: source.title,
-          chatTitle: source.chatTitle,
-          url: source.url,
-          progress: 0,
-          status: "downloading"
-        },
-        ...prev
-      ];
-    });
-  };
-
-  const pauseDownload = (sourceId: string) => {
-    setDownloads((prev) =>
-      prev.map((item) => (item.sourceId === sourceId ? { ...item, status: "paused" } : item))
-    );
   };
 
   useEffect(() => {
@@ -2959,6 +3071,70 @@ function AppShell() {
             <div className="mt-4 space-y-4">
               <h1 className="text-3xl font-semibold tracking-tight">Вход</h1>
               <p className="text-sm text-slate-400">Вход по коду и по QR объединены в один экран.</p>
+              <form onSubmit={submitEmailLogin} className="space-y-3 rounded-2xl border p-3" style={accentSoftStyle}>
+                <p className="text-sm text-slate-200">Вход по почте</p>
+                <p className="text-xs text-slate-400">
+                  Введи почту, на которую зарегистрирован аккаунт — пришлём код, и введи его здесь же.
+                </p>
+                <input
+                  value={emailLoginValue}
+                  onChange={(event) => {
+                    setEmailLoginValue(event.target.value);
+                    setEmailLoginStatus("");
+                    setEmailLoginSent(false);
+                  }}
+                  className="w-full rounded-xl border bg-transparent px-3 py-2 outline-none"
+                  style={accentInputStyle}
+                  placeholder="name@example.com"
+                  type="email"
+                  autoComplete="email"
+                  required
+                />
+                {!emailLoginSent ? (
+                  <button
+                    type="button"
+                    onClick={() => void requestEmailLoginCode()}
+                    style={accentButtonStyle}
+                    className="w-full rounded-xl px-4 py-2 text-white"
+                  >
+                    Отправить код на почту
+                  </button>
+                ) : (
+                  <>
+                    <input
+                      value={emailLoginCode}
+                      onChange={(event) => {
+                        setEmailLoginCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+                        setEmailLoginStatus("");
+                      }}
+                      className="w-full rounded-xl border bg-transparent px-3 py-2 text-center text-lg tracking-[0.35em] outline-none"
+                      style={accentInputStyle}
+                      placeholder="000000"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                    />
+                    {emailLoginDevCode && (
+                      <p className="rounded-xl border px-3 py-2 text-center text-sm" style={accentChipStyle}>
+                        Код: <span className="text-lg font-semibold tracking-[0.25em]">{emailLoginDevCode}</span>
+                      </p>
+                    )}
+                    <button type="submit" style={accentButtonStyle} className="w-full rounded-xl px-4 py-2 text-white">
+                      Войти
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void requestEmailLoginCode()}
+                      className="w-full rounded-xl px-4 py-2 text-xs"
+                      style={accentSurfaceStyle}
+                    >
+                      Отправить код ещё раз
+                    </button>
+                  </>
+                )}
+                {emailLoginStatus && <p className="text-xs text-amber-300">{emailLoginStatus}</p>}
+              </form>
+
               <form onSubmit={loginWithCode} className="space-y-3 rounded-2xl border p-3" style={accentSoftStyle}>
                 <p className="text-sm text-slate-200">Вход по коду</p>
                 <input
@@ -3033,7 +3209,10 @@ function AppShell() {
       )}
 
       <div className="relative mx-auto grid min-h-[calc(100vh-2rem)] max-w-7xl grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
-        <aside className={`rounded-[2rem] p-4 transition-all duration-500 klanzy-panel-enter ${panelClass}`} style={panelStyle}>
+        <aside
+          className={`${mobileChatOpen ? "hidden md:block" : "block"} rounded-[2rem] p-4 pb-24 transition-all duration-500 klanzy-panel-enter md:pb-4 ${panelClass}`}
+          style={panelStyle}
+        >
           <div className="mb-4 flex items-center gap-3">
             <div className="h-12 w-12 overflow-hidden rounded-2xl">
               {profile.avatar ? (
@@ -3142,17 +3321,18 @@ function AppShell() {
                     onClick={() => {
                       setActiveChatId(chat.id);
                       setActiveSection("chats");
+                      setMobileChatOpen(true);
                     }}
                     style={activeChatId === chat.id ? accentSoftStyle : undefined}
                     className="w-full rounded-2xl p-3 text-left transition hover:opacity-90 klanzy-item-enter"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="font-medium">{chat.title}</div>
+                      <div className="font-medium">{chatTitle(chat)}</div>
                       <span style={accentChipStyle} className={`rounded-full px-2 py-0.5 text-[10px] ${accentChipClass}`}>
                         {chat.visibility}
                       </span>
                     </div>
-                    <div className="text-xs text-slate-400">{chat.username ?? "без username"}</div>
+                    <div className="text-xs text-slate-400">{chatSubtitle(chat)}</div>
                   </button>
                 ))}
               </div>
@@ -3160,176 +3340,102 @@ function AppShell() {
           )}
 
           {activeSection === "search" && (
-            <div className="relative mt-4 space-y-3 overflow-hidden pb-28">
-              <input
-                value={globalSearch}
-                onChange={(event) => setGlobalSearch(event.target.value)}
-                placeholder="Поиск по Klanzy"
-                className="w-full rounded-2xl border bg-transparent px-3 py-2 outline-none"
-                style={accentInputStyle}
-              />
+            <div className="mt-4 space-y-3 pb-28">
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  rememberSearchQuery(globalSearch);
+                }}
+              >
+                <input
+                  value={globalSearch}
+                  onChange={(event) => setGlobalSearch(event.target.value)}
+                  placeholder="Поиск: @username или ник"
+                  className="w-full rounded-2xl border bg-transparent px-3 py-2 outline-none"
+                  style={accentInputStyle}
+                />
+              </form>
 
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {searchTabs.map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => setActiveSearchTab(tab)}
-                    style={activeSearchTab === tab ? accentButtonStyle : accentSurfaceStyle}
-                    className={`rounded-xl px-2 py-2 ${activeSearchTab === tab ? "text-white" : ""}`}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
-
-              {activeSearchTab === "Загрузки" ? (
+              {globalSearch.trim() ? (
                 <div className="space-y-2">
-                  {filteredDownloadSources.length === 0 && (
-                    <p className="text-sm text-slate-400">Загрузки не найдены.</p>
+                  {searchResults.length === 0 && (
+                    <p className="rounded-2xl border p-3 text-xs text-slate-400" style={accentSoftStyle}>
+                      Ничего не найдено. Ищи по @username или нику — например, <span className="text-slate-200">@klan3s</span>.
+                    </p>
                   )}
-
-                  {filteredDownloadSources.map((source) => {
-                    const downloadState = downloads.find((item) => item.sourceId === source.sourceId);
-                    const progress = downloadState?.progress ?? 0;
-                    const status = downloadState?.status;
-
-                    return (
-                      <div key={source.sourceId} className="rounded-xl p-2 klanzy-item-enter" style={accentSurfaceStyle}>
-                        <p className="text-sm font-medium break-all">{truncateFileName(source.title, 42)}</p>
-                        <p className="text-xs text-slate-400">Чат: {source.chatTitle}</p>
-
-                        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/20">
-                          <div
-                            className="h-full rounded-full transition-all"
-                            style={{ width: `${progress}%`, backgroundColor: accent.primary }}
-                          />
-                        </div>
-
-                        <div className="mt-2 flex items-center gap-2 text-xs">
-                          {!status && (
-                            <button
-                              type="button"
-                              onClick={() => startOrResumeDownload(source)}
-                              style={accentButtonStyle}
-                              className="rounded-lg px-2 py-1 text-white"
-                            >
-                              Скачать
-                            </button>
-                          )}
-
-                          {status === "downloading" && (
-                            <>
-                              <span className="text-slate-300">Скачивается: {progress}%</span>
-                              <button
-                                type="button"
-                                onClick={() => pauseDownload(source.sourceId)}
-                                className="rounded-lg px-2 py-1"
-                                style={accentSoftStyle}
-                              >
-                                Пауза
-                              </button>
-                            </>
-                          )}
-
-                          {status === "paused" && (
-                            <>
-                              <span className="text-amber-300">Пауза: {progress}%</span>
-                              <button
-                                type="button"
-                                onClick={() => startOrResumeDownload(source)}
-                                style={accentButtonStyle}
-                                className="rounded-lg px-2 py-1 text-white"
-                              >
-                                Продолжить
-                              </button>
-                            </>
-                          )}
-
-                          {status === "done" && (
-                            <a
-                              href={source.url}
-                              download={source.title}
-                              className="rounded-lg px-2 py-1 underline-offset-2 hover:underline"
-                              style={accentSoftStyle}
-                            >
-                              Файл готов. Скачать
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {searchResults.length === 0 && <p className="text-sm text-slate-400">Ничего не найдено.</p>}
                   {searchResults.map((result) => (
                     <button
                       key={result.id}
                       type="button"
-                      onClick={() => {
-                        if (result.entityKind === "user") {
-                          openOrCreateDirectChat(result.username, result.label);
-                          return;
-                        }
-
-                        if (result.entityKind === "chat" && chats.some((chat) => chat.id === result.id)) {
-                          setActiveChatId(result.id);
-                          setActiveSection("chats");
-                        }
-                      }}
-                      className="w-full rounded-xl p-2 text-left transition hover:opacity-90 klanzy-item-enter"
+                      onClick={() => openSearchResult(result)}
+                      className="flex w-full items-center gap-2 rounded-xl p-2 text-left transition hover:opacity-90 klanzy-item-enter"
                       style={accentSurfaceStyle}
                     >
-                      <div className="flex items-center gap-2 text-sm">
-                        <span>{result.label}</span>
-                        {result.entityKind === "user" && renderBadge(getBadgeForUsername(result.username), "sm")}
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        {result.username ?? result.type}
-                        {result.entityKind === "user" ? " • Пользователь" : ""}
-                      </div>
+                      <span
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
+                        style={accentChipStyle}
+                      >
+                        {(result.label || "?").slice(0, 2).toUpperCase()}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1 text-sm">
+                          <span className="truncate">{result.label}</span>
+                          {result.entityKind === "user" && renderBadge(getBadgeForUsername(result.username), "xs")}
+                        </span>
+                        <span className="block truncate text-xs text-slate-400">
+                          {result.username ?? "без username"}
+                          {result.entityKind === "user"
+                            ? " · человек"
+                            : result.type === "Каналы"
+                              ? " · канал"
+                              : " · группа"}
+                        </span>
+                      </span>
                     </button>
                   ))}
                 </div>
-              )}
-
-              {showPoppyHands && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24">
-                  <div className="absolute bottom-0 left-0 klanzy-hand-rise-left">
-                    <svg viewBox="0 0 200 120" className="h-20 w-28" aria-hidden="true">
-                      <path
-                        d="M15 115c16-26 18-43 28-62 6-12 14-17 24-13 9 4 11 15 8 26-2 7-6 15-10 24 10-14 16-29 26-40 7-8 15-10 22-4 8 6 8 14 4 24-2 6-7 14-13 24 9-9 16-18 24-25 9-8 17-8 23-2 7 7 6 17-1 27-7 10-17 20-28 31l83-2v12H15Z"
-                        fill="#2b7fff"
-                        opacity="0.9"
-                      />
-                      <path
-                        d="M18 115c14-22 16-37 26-55 5-10 13-14 21-11 7 3 8 11 6 19-2 7-6 13-9 20"
-                        stroke="#9bd6ff"
-                        strokeWidth="4"
-                        fill="none"
-                        strokeLinecap="round"
-                      />
-                    </svg>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-400">История поиска</p>
+                    {searchHistoryItems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearSearchHistory}
+                        className="rounded-full border px-2 py-1 text-[11px]"
+                        style={accentInputStyle}
+                      >
+                        Очистить
+                      </button>
+                    )}
                   </div>
 
-                  <div className="absolute bottom-0 right-0 klanzy-hand-rise-right">
-                    <svg viewBox="0 0 200 120" className="h-20 w-28" aria-hidden="true">
-                      <path
-                        d="M185 115c-16-26-18-43-28-62-6-12-14-17-24-13-9 4-11 15-8 26 2 7 6 15 10 24-10-14-16-29-26-40-7-8-15-10-22-4-8 6-8 14-4 24 2 6 7 14 13 24-9-9-16-18-24-25-9-8-17-8-23-2-7 7-6 17 1 27 7 10 17 20 28 31l-83-2v12h190Z"
-                        fill="#ef4444"
-                        opacity="0.9"
-                      />
-                      <path
-                        d="M182 115c-14-22-16-37-26-55-5-10-13-14-21-11-7 3-8 11-6 19 2 7 6 13 9 20"
-                        stroke="#fecaca"
-                        strokeWidth="4"
-                        fill="none"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </div>
+                  {searchHistoryItems.length === 0 ? (
+                    <p className="rounded-2xl border p-3 text-xs text-slate-400" style={accentSoftStyle}>
+                      Здесь появится история поиска. Найди человека, группу или канал по @username — они сохранятся тут.
+                    </p>
+                  ) : (
+                    searchHistoryItems.map((query) => (
+                      <button
+                        key={query}
+                        type="button"
+                        onClick={() => setGlobalSearch(query)}
+                        className="flex w-full items-center gap-2 rounded-xl p-2 text-left text-sm"
+                        style={accentSurfaceStyle}
+                      >
+                        <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 opacity-60" aria-hidden="true">
+                          <path
+                            d="M12 3a9 9 0 1 0 5.66 16M21 21l-4.35-4.35"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                        <span className="truncate">{query}</span>
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </div>
@@ -3799,9 +3905,23 @@ function AppShell() {
           )}
         </aside>
 
-        <main className={`flex min-h-[500px] flex-col rounded-[2rem] p-4 transition-all duration-500 klanzy-panel-enter ${panelClass}`} style={panelStyle}>
+        <main
+          className={`${mobileChatOpen ? "klanzy-mobile-chat flex" : "hidden md:flex"} min-h-[500px] flex-col rounded-[2rem] p-4 transition-all duration-500 klanzy-panel-enter ${panelClass}`}
+          style={panelStyle}
+        >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b pb-3" style={{ borderColor: hexToRgba(accent.secondary, 0.35) }}>
-            <div>
+            <button
+              type="button"
+              onClick={() => setMobileChatOpen(false)}
+              className="mr-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full md:hidden"
+              style={accentSurfaceStyle}
+              aria-label="Назад к чатам"
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <div className="min-w-0 flex-1">
               {activeChat.kind === "group" || activeChat.kind === "channel" ? (
                 <button
                   type="button"
@@ -3809,7 +3929,7 @@ function AppShell() {
                   className="flex items-center gap-2 rounded-2xl px-2 py-1 text-left"
                   title="Управление группой или каналом"
                 >
-                  <h2 className="text-xl font-semibold">{activeChat.title}</h2>
+                  <h2 className="text-lg font-semibold sm:text-xl">{chatTitle(activeChat)}</h2>
                   <span
                     className="rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide"
                     style={accentChipStyle}
@@ -3818,21 +3938,12 @@ function AppShell() {
                   </span>
                 </button>
               ) : (
-                <h2 className="text-xl font-semibold">{activeChat.title}</h2>
+                <h2 className="text-lg font-semibold sm:text-xl">{chatTitle(activeChat)}</h2>
               )}
-              <p className="text-xs text-slate-400">
-                {activeChat.username ??
-                  (activeChat.kind === "group"
-                    ? "группа"
-                    : activeChat.kind === "channel"
-                      ? "канал"
-                      : activeChat.kind === "bot"
-                        ? "бот"
-                        : "Личный диалог")}
-              </p>
+              <p className="text-xs text-slate-400">{chatSubtitle(activeChat)}</p>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto">
               {activeChat.kind === "direct" && (
                 <button
                   type="button"
@@ -3863,20 +3974,16 @@ function AppShell() {
                 value={messageSearch}
                 onChange={(event) => setMessageSearch(event.target.value)}
                 placeholder="Поиск сообщений"
-                className="h-9 w-36 rounded-xl border bg-transparent px-2.5 py-1.5 text-xs outline-none sm:w-44"
+                className="h-9 min-w-0 flex-1 rounded-xl border bg-transparent px-2.5 py-1.5 text-xs outline-none sm:w-44 sm:flex-none"
                 style={accentInputStyle}
               />
               <button
                 type="button"
                 onClick={clearActiveChatHistory}
-                className="h-9 rounded-xl px-2.5 text-[11px] leading-tight text-white sm:px-3 sm:text-xs"
+                className="h-9 shrink-0 whitespace-nowrap rounded-xl px-3 text-xs text-white"
                 style={{ backgroundColor: hexToRgba("#ef4444", 0.65) }}
               >
-                <span className="block text-center">
-                  Очистить
-                  <br />
-                  чат
-                </span>
+                Очистить чат
               </button>
             </div>
           </div>
@@ -4147,6 +4254,53 @@ function AppShell() {
           </div>
         </>
       )}
+
+      {/* ── нижняя навигация для телефона ── */}
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 flex items-stretch justify-around border-t px-1 md:hidden"
+        style={{
+          backgroundColor: "var(--md-sys-color-surface-container)",
+          borderColor: "var(--md-sys-color-outline-variant)",
+          paddingBottom: "env(safe-area-inset-bottom)"
+        }}
+      >
+        {[
+          { id: "chats", label: "Чаты", icon: "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H10l-4.2 3.4A.8.8 0 0 1 4.5 18.8V16h-.5A2.5 2.5 0 0 1 4 13.5Z" },
+          { id: "search", label: "Поиск", icon: "M11 4a7 7 0 1 0 4.4 12.4M21 21l-4.3-4.3" },
+          { id: "events", label: "Эвенты", icon: "M12 3.5l2.4 5 5.6.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.6-.8Z" },
+          { id: "settings", label: "Настройки", icon: "M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm8-3.5a8 8 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a8 8 0 0 0-2-1.2L15.2 3H8.8l-.4 2.6a8 8 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5a8 8 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-.9a8 8 0 0 0 2 1.2L8.8 21h6.4l.4-2.6a8 8 0 0 0 2-1.2l2.3.9 2-3.4-2-1.5c0-.4.1-.8.1-1.2Z" }
+        ].map((item) => {
+          const isActive = activeSection === item.id && !mobileChatOpen;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                setActiveSection(item.id as SectionTab);
+                setMobileChatOpen(false);
+              }}
+              className="flex flex-1 flex-col items-center gap-0.5 rounded-2xl px-1 py-2 text-[10px] font-medium transition"
+              style={
+                isActive
+                  ? { backgroundColor: "var(--md-sys-color-secondary-container)", color: "var(--md-sys-color-on-secondary-container)" }
+                  : { color: "var(--md-sys-color-on-surface-variant)" }
+              }
+            >
+              <svg viewBox="0 0 24 24" className="h-6 w-6" aria-hidden="true">
+                <path
+                  d={item.icon}
+                  fill={item.id === "events" ? "none" : "none"}
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
 
       {showChatMenu && (
         <div
