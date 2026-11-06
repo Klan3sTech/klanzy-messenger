@@ -1074,19 +1074,21 @@ function AppShell() {
   const [m3Tokens, setM3Tokens] = useState<M3Tokens | null>(null);
 
   useEffect(() => {
-    let frame = 0;
-    let timer = 0;
+    const host = typeof document === "undefined" ? null : document.querySelector("m3e-theme");
     const sync = () => {
       const tokens = readM3Tokens();
       if (tokens) {
         setM3Tokens(tokens);
       }
     };
-    frame = window.requestAnimationFrame(sync);
-    timer = window.setTimeout(sync, 150);
+    /* элемент пересчитывает палитру асинхронно — ловим его событие change и подстраховываемся таймерами */
+    host?.addEventListener("change", sync);
+    const frame = window.requestAnimationFrame(sync);
+    const timers = [60, 160, 320, 600].map((delay) => window.setTimeout(sync, delay));
     return () => {
+      host?.removeEventListener("change", sync);
       window.cancelAnimationFrame(frame);
-      window.clearTimeout(timer);
+      timers.forEach((timer) => window.clearTimeout(timer));
     };
   }, [theme, accentTheme]);
 
@@ -1169,13 +1171,15 @@ function AppShell() {
   const accentChipClass = "border";
 
   useEffect(() => {
+    /* ВАЖНО: зависимости включают accentTheme — иначе <m3e-theme> не получает новый seed
+       и палитра меняется только после перезагрузки страницы. */
     window.dispatchEvent(new CustomEvent("klanzy:skin", { detail: { theme, accentTheme } }));
     document.documentElement.style.colorScheme = theme;
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.backgroundColor = theme === "dark" ? "#020617" : "#ffffff";
     document.body.style.backgroundColor = theme === "dark" ? "#020617" : "#ffffff";
     document.body.style.color = theme === "dark" ? "#e2e8f0" : "#0f172a";
-  }, [theme]);
+  }, [theme, accentTheme]);
 
   useEffect(() => {
     localStorage.setItem(THEME_STORAGE_KEY, theme);
@@ -3186,7 +3190,7 @@ function AppShell() {
 
   return (
     <div
-      className={`relative min-h-screen overflow-hidden p-4 sm:p-6 ${liteMode ? "klanzy-lite" : "klanzy-fade-in"} ${containerClass}`}
+      className={`klanzy-shell relative min-h-screen overflow-hidden p-4 sm:p-6 ${liteMode ? "klanzy-lite" : "klanzy-fade-in"} ${containerClass}`}
       style={pageBackgroundStyle}
     >
       {!liteMode && <div className="pointer-events-none absolute left-0 top-0 h-72 w-72 rounded-full blur-3xl" style={accentSurfaceStyle} />}
@@ -3208,12 +3212,12 @@ function AppShell() {
         </div>
       )}
 
-      <div className="relative mx-auto grid min-h-[calc(100vh-2rem)] max-w-7xl grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
+      <div className="klanzy-layout relative mx-auto grid min-h-[calc(100vh-2rem)] max-w-7xl grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
         <aside
           className={`${mobileChatOpen ? "hidden md:block" : "block"} rounded-[2rem] p-4 pb-24 transition-all duration-500 klanzy-panel-enter md:pb-4 ${panelClass}`}
           style={panelStyle}
         >
-          <div className="mb-4 flex items-center gap-3">
+          <div className="mb-4 hidden items-center gap-3 md:flex">
             <div className="h-12 w-12 overflow-hidden rounded-2xl">
               {profile.avatar ? (
                 <img src={profile.avatar} alt="avatar" className="h-full w-full object-cover" />
@@ -3230,7 +3234,7 @@ function AppShell() {
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2 text-sm">
+          <div className="hidden grid-cols-4 gap-2 text-sm md:grid">
             {[
               { id: "chats", label: "Чаты" },
               { id: "search", label: "Поиск" },
