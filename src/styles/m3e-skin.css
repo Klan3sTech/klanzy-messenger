@@ -299,15 +299,49 @@ section::-webkit-scrollbar {
   width: 6px;
 }
 
-/* ── Телефон: чат открывается на весь экран, но нижняя панель остаётся ── */
+/* ── Телефон: рабочая область занимает весь экран над нижней панелью ── */
+:root {
+  --klanzy-nav-h: calc(58px + env(safe-area-inset-bottom, 0px));
+}
+
 @media (max-width: 767px) {
+  /* каркас приложения: без внешних отступов и скруглений, на всю высоту экрана */
+  .klanzy-shell {
+    padding: 0 !important;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .klanzy-layout {
+    height: 100%;
+    min-height: 0 !important;
+    gap: 0 !important;
+  }
+
+  .klanzy-layout > aside {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: calc(var(--klanzy-nav-h) + 8px) !important;
+    scroll-padding-bottom: calc(var(--klanzy-nav-h) + 8px);
+  }
+
+  /* открытый чат: тоже во весь экран, нижняя панель остаётся поверх */
   .klanzy-mobile-chat {
     position: fixed;
-    inset: 0 0 72px 0;
+    inset: 0 0 var(--klanzy-nav-h) 0;
     z-index: 30;
     overflow-y: auto;
     border-radius: 0 !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
+    padding-bottom: 8px !important;
+    overscroll-behavior: contain;
   }
 }
